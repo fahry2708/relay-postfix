@@ -253,6 +253,12 @@ password = "$RSPAMD_HASH";
 enable_password = "$RSPAMD_HASH";
 EOF
   chmod 640 $RD/worker-controller.inc; chown root:_rspamd $RD/worker-controller.inc
+  # Bawaan rspamd: 127.0.0.1 boleh masuk UI tanpa password (secure_ip). Akses lewat SSH tunnel
+  # atau reverse proxy selalu tampak dari 127.0.0.1, jadi kosongkan agar password selalu wajib.
+  mkdir -p /etc/rspamd/override.d
+  cat > /etc/rspamd/override.d/worker-controller.inc <<'EOF'
+secure_ip = [];
+EOF
   echo 'bind_socket = "127.0.0.1:11333";' > $RD/worker-normal.inc
   cat > $RD/worker-proxy.inc <<'EOF'
 bind_socket = "127.0.0.1:11332";

@@ -68,7 +68,8 @@ lalu deploy ulang dengan `RSPAMD_MODE=enforce`.
 
 - Semua port rspamd (11332/11333/11334) hanya di `127.0.0.1`; script berhenti bila tidak.
 - Web UI: `ssh -L 11334:127.0.0.1:11334 root@<relay>` lalu buka `http://127.0.0.1:11334`.
-  Password ada di `/root/.rspamd_ui_password` (dibuat acak, hanya root).
+  Password ada di `/root/.rspamd_ui_password` (dibuat acak, hanya root) dan **selalu wajib**,
+  juga dari localhost (`secure_ip = []` di `override.d`).
 - Rspamd 2.7 (paket Ubuntu) dipakai karena rspamd 3.x butuh CPU dengan SSE4.2/SSSE3.
 - String uji GTUBE selalu memaksa reject, juga pada mode `observe`.
 - Ratelimit tidak menghitung pemindaian manual via `rspamc`; uji lewat HTTP
