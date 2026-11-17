@@ -258,16 +258,23 @@ EOF
   [ -d "$RD.bak-$BACKUP_TS" ] || cp -a "$RD" "$RD.bak-$BACKUP_TS"
 
   # Semua worker HANYA di localhost. Dulu controller bind 0.0.0.0:11334 dan disalahgunakan.
-  if [ ! -s /root/.rspamd_ui_password ]; then
-    ( umask 077; openssl rand -base64 24 | tr -d '/+=' | cut -c1-24 > /root/.rspamd_ui_password )
-  fi
+  # Dua password acak: lihat (history/skor) dan admin (ubah setelan/learn). Bila password lihat
+  # bocor (mis. UI dibuka publik), setelan filter tetap tidak bisa diubah.
+  for f in /root/.rspamd_ui_password /root/.rspamd_ui_enable_password; do
+    [ -s "$f" ] || ( umask 077; openssl rand -base64 24 | tr -d '/+=' | cut -c1-24 > "$f" )
+  done
   # rspamadm mencetak peringatan CPU ke stdout; ambil baris hash saja
-  RSPAMD_HASH=$(rspamadm pw -p "$(cat /root/.rspamd_ui_password)" 2>/dev/null | grep -E '^\$[0-9]+\$' | tail -1)
+  rspamd_hash() { rspamadm pw -p "$(cat "$1")" 2>/dev/null | grep -E '^\$[0-9]+\$' | tail -1; }
+  RSPAMD_VIEW_HASH=$(rspamd_hash /root/.rspamd_ui_password)
+  RSPAMD_ADMIN_HASH=$(rspamd_hash /root/.rspamd_ui_enable_password)
   cat > $RD/worker-controller.inc <<EOF
 # Web UI hanya localhost. Akses: ssh -L 11334:127.0.0.1:11334 root@<relay>
+# atau https://<domain>/rspamd/ (monitoring/install_monitoring.sh, RSPAMD_UI_PUBLIC=1)
+# password        = hanya lihat  -> /root/.rspamd_ui_password
+# enable_password = admin        -> /root/.rspamd_ui_enable_password
 bind_socket = "127.0.0.1:11334";
-password = "$RSPAMD_HASH";
-enable_password = "$RSPAMD_HASH";
+password = "$RSPAMD_VIEW_HASH";
+enable_password = "$RSPAMD_ADMIN_HASH";
 EOF
   chmod 640 $RD/worker-controller.inc; chown root:_rspamd $RD/worker-controller.inc
   # Bawaan rspamd: 127.0.0.1 boleh masuk UI tanpa password (secure_ip). Akses lewat SSH tunnel

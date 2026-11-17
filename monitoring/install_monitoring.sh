@@ -17,6 +17,8 @@ RETENTION=${RETENTION:-30d}
 # PUBLIC_DOMAIN (opsional, diisi manual): buka dashboard di https://<domain> lewat nginx.
 # Butuh sertifikat Let's Encrypt di /etc/letsencrypt/live/<domain>/. Kosong = hanya SSH tunnel.
 PUBLIC_DOMAIN=${PUBLIC_DOMAIN:-}
+# RSPAMD_UI_PUBLIC=1: web UI rspamd juga di https://<PUBLIC_DOMAIN>/rspamd/ (password wajib + fail2ban)
+RSPAMD_UI_PUBLIC=${RSPAMD_UI_PUBLIC:-0}
 if [ -n "$PUBLIC_DOMAIN" ] && [ ! -f "/etc/letsencrypt/live/$PUBLIC_DOMAIN/fullchain.pem" ]; then
   echo "ERROR: sertifikat untuk $PUBLIC_DOMAIN tidak ada. Buat dulu: certbot certonly --nginx -d $PUBLIC_DOMAIN" >&2
   exit 1
@@ -274,6 +276,7 @@ server {
     proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
 
+__RSPAMD_LOCATION__
     location = /login {
         limit_req zone=grafana_login burst=5 nodelay;
         proxy_pass http://127.0.0.1:3000;
@@ -292,6 +295,47 @@ server {
 EOF
   ln -sf /etc/nginx/sites-available/relay-grafana.conf /etc/nginx/sites-enabled/relay-grafana.conf
   rm -f /etc/nginx/sites-enabled/relay-acme.conf   # digantikan blok port 80 di atas
+  NG=/etc/nginx/sites-available/relay-grafana.conf
+  if [ "$RSPAMD_UI_PUBLIC" = "1" ]; then
+    python3 -I - "$NG" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+block = '''    # Web UI rspamd (password wajib; password lihat != password admin). Gagal login berulang -> fail2ban.
+    location = /rspamd { return 301 /rspamd/; }
+    location /rspamd/ {
+        proxy_pass http://127.0.0.1:11334/;
+        proxy_set_header Host            $host;
+        proxy_set_header X-Real-IP       $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        client_max_body_size 20m;
+    }
+'''
+open(p, 'w').write(s.replace('__RSPAMD_LOCATION__\n', block))
+PY
+    # fail2ban: nginx mencatat 403 dari rspamd (password salah) dengan IP asli klien
+    cat > /etc/fail2ban/filter.d/nginx-rspamd-auth.conf <<'EOF'
+[Definition]
+# 403 dari web UI rspamd = password salah / tanpa password
+# (fail2ban membuang bagian tanggal [..] sebelum pencocokan, jadi jangan cocokkan \[...\])
+failregex = ^<HOST> .*"(GET|POST) /rspamd/\S* HTTP/[0-9.]+" 403
+ignoreregex =
+EOF
+    cat > /etc/fail2ban/jail.d/rspamd-ui.conf <<'EOF'
+[rspamd-ui]
+enabled  = true
+port     = 80,443
+filter   = nginx-rspamd-auth
+logpath  = /var/log/nginx/access.log
+maxretry = 10
+findtime = 600
+bantime  = 3600
+action   = route
+EOF
+    systemctl restart fail2ban || true
+  else
+    sed -i '/^__RSPAMD_LOCATION__$/d' "$NG"
+    rm -f /etc/fail2ban/jail.d/rspamd-ui.conf
+  fi
   nginx -t
   systemctl reload nginx
   command -v ufw >/dev/null && ufw allow 443/tcp comment "https grafana dashboard" >/dev/null || true
