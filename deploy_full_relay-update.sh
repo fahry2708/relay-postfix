@@ -236,7 +236,24 @@ fi
 # RL_OVERRIDES: batas khusus, format "alamat=angka alamat2=angka" (diisi manual, tanpa default)
 if [ "$RSPAMD_MODE" != "off" ]; then
   echo ">> Konfigurasi rspamd (mode: $RSPAMD_MODE)..."
-  apt-get install -y rspamd redis-server
+  apt-get install -y rspamd redis-server unbound
+  # Resolver rekursif lokal: rspamd butuh DNS yang tidak diblokir Spamhaus/SURBL
+  # (resolver publik 1.1.1.1/8.8.8.8 ditolak). DNS sistem tidak diubah.
+  cat > /etc/unbound/unbound.conf.d/relay-local.conf <<'EOF'
+server:
+  interface: 127.0.0.1
+  port: 53
+  access-control: 127.0.0.0/8 allow
+  do-ip6: no
+  hide-identity: yes
+  hide-version: yes
+  qname-minimisation: yes
+  prefetch: yes
+  cache-min-ttl: 60
+EOF
+  unbound-checkconf >/dev/null
+  systemctl enable unbound >/dev/null 2>&1 || true
+  systemctl restart unbound
   RD=/etc/rspamd/local.d
   [ -d "$RD.bak-$BACKUP_TS" ] || cp -a "$RD" "$RD.bak-$BACKUP_TS"
 
@@ -279,7 +296,7 @@ EOF
   cat > $RD/options.inc <<EOF
 local_addrs = [$LOCAL_ADDRS];
 dns {
-  nameserver = ["127.0.0.53"];
+  nameserver = ["127.0.0.1"];
 }
 EOF
 

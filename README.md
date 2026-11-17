@@ -93,11 +93,41 @@ lalu deploy ulang dengan `RSPAMD_MODE=enforce`.
 - Web UI apa pun (rspamd, Grafana) hanya di-bind ke `127.0.0.1`; akses lewat SSH tunnel
   atau reverse proxy dengan HTTPS + login.
 
-## Monitoring
+## Monitoring (Grafana)
+
+```bash
+sudo bash monitoring/install_monitoring.sh
+```
+
+Memasang Prometheus, Grafana, mtail, node_exporter, dan unbound. **Semua hanya listen di
+`127.0.0.1`**; script berhenti bila ada port monitoring yang terbuka ke luar.
+
+Buka dashboard lewat SSH tunnel:
+
+```bash
+ssh -L 3000:127.0.0.1:3000 root@<relay>
+# lalu buka http://127.0.0.1:3000  (user admin, password: cat /root/.grafana_admin_password)
+# Dashboard: Relay > Relay Postfix
+```
+
+| Komponen | Port | Isi |
+|---|---|---|
+| mtail (`monitoring/*.mtail`) | 3903 | sent/deferred/bounced per `outN` dan per penyedia (Gmail/Yahoo/Microsoft), email baru per pengirim, skor rspamd, `RATELIMITED`, reject |
+| `relay-metrics.sh` (cron tiap menit) | textfile | antrian Postfix, peta `outN` -> IP (dari `master.cf`), DNSBL tiap 15 menit (Spamhaus, Barracuda, SpamCop, PSBL) |
+| node_exporter | 9100 | CPU, RAM, disk |
+| Prometheus | 9090 | retensi 30 hari (`RETENTION`) |
+| Grafana | 3000 | dashboard `monitoring/grafana-relay-dashboard.json` (provisioned) |
+| unbound | 53 | resolver lokal untuk rspamd dan DNSBL; Spamhaus menolak resolver publik |
+
+Catatan:
+- Log Postfix tidak boleh tercatat dua kali (mtail dan fail2ban menghitung per baris). Script
+  memindahkan aturan rsyslog kustom yang menulis `mail.log` + `stop` ke urutan `10-`.
+- Jangan uji login Grafana dengan password salah berulang kali: Grafana mengunci akun sekitar 5 menit.
+
+Perintah cepat:
 
 ```bash
 tail -f /var/log/mail.log
 postqueue -p
-pflogsumm /var/log/mail.log
 grep -oE 'postfix/out[0-9]+' /var/log/mail.log | sort | uniq -c   # distribusi per IP
 ```

@@ -1,0 +1,39 @@
+# mtail: metrik relay Postfix dari /var/log/mail.log
+# Transport keluar memakai syslog_name postfix/outN (lihat master.cf).
+
+counter postfix_relay_delivery_total by transport, status
+counter postfix_relay_delivery_provider_total by transport, status, provider
+counter postfix_relay_received_total by client
+counter postfix_relay_reject_total by code
+counter postfix_relay_milter_reject_total
+
+# Hasil pengiriman per transport (= per IP keluar)
+/ postfix\/(?P<transport>out\d+)\/smtp\[\d+\]: \w+: to=<[^>]*>, .*status=(?P<status>[a-z]+)/ {
+  postfix_relay_delivery_total[$transport][$status]++
+}
+
+# Per penyedia besar (sisanya = total dikurangi ini, dihitung di PromQL)
+/ postfix\/(?P<transport>out\d+)\/smtp\[\d+\]: \w+: to=<[^>@]*@(gmail\.com|googlemail\.com)>, .*status=(?P<status>[a-z]+)/ {
+  postfix_relay_delivery_provider_total[$transport][$status]["gmail"]++
+}
+/ postfix\/(?P<transport>out\d+)\/smtp\[\d+\]: \w+: to=<[^>@]*@(yahoo\.[a-z.]+|ymail\.com|rocketmail\.com)>, .*status=(?P<status>[a-z]+)/ {
+  postfix_relay_delivery_provider_total[$transport][$status]["yahoo"]++
+}
+/ postfix\/(?P<transport>out\d+)\/smtp\[\d+\]: \w+: to=<[^>@]*@(outlook\.[a-z.]+|hotmail\.[a-z.]+|live\.[a-z.]+|msn\.com)>, .*status=(?P<status>[a-z]+)/ {
+  postfix_relay_delivery_provider_total[$transport][$status]["microsoft"]++
+}
+
+# Email baru diterima dari upstream (port 25 atau 587)
+/ postfix\/(submission\/)?smtpd\[\d+\]: \w+: client=(?P<client>[^\[ ]+)\[/ {
+  postfix_relay_received_total[$client]++
+}
+
+# Ditolak relay sebelum masuk antrian (relay access denied, RBL, dll.)
+/ NOQUEUE: reject: \S+ from \S+: (?P<code>\d{3}) / {
+  postfix_relay_reject_total[$code]++
+}
+
+# Ditolak oleh milter (rspamd mode enforce)
+/ milter-reject: / {
+  postfix_relay_milter_reject_total++
+}

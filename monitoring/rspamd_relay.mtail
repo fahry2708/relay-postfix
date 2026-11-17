@@ -1,0 +1,23 @@
+# mtail: metrik rspamd dari /var/log/rspamd/rspamd.log (rspamd 2.7, baris rspamd_task_write_log)
+# Contoh: ... rspamd_task_write_log: id: <..>, qid: <..>, ip: 1.2.3.4, from: <a@b>, (default: F (no action): [-0.09/nan] [...]
+
+counter rspamd_relay_messages_total by sender, action
+counter rspamd_relay_score_over_total by sender, threshold
+counter rspamd_relay_ratelimited_total by sender
+histogram rspamd_relay_score buckets -5, 0, 2, 4, 6, 8, 10, 15, 20, 30
+
+/rspamd_task_write_log: id: <[^>]*>, qid: <[^>]*>, ip: \S+, from: <(?P<sender>[^>]*)>, \(default: [TF] \((?P<action>[a-z ]+)\): \[(?P<score>-?\d+\.\d+)\// {
+  rspamd_relay_messages_total[$sender][$action]++
+  rspamd_relay_score = $score
+
+  $score >= 8.0 {
+    rspamd_relay_score_over_total[$sender]["8"]++
+  }
+  $score >= 15.0 {
+    rspamd_relay_score_over_total[$sender]["15"]++
+  }
+
+  /RATELIMITED\(/ {
+    rspamd_relay_ratelimited_total[$sender]++
+  }
+}
