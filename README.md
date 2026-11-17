@@ -51,6 +51,29 @@ script mencetak record TXT yang harus ada di DNS.
 Script idempotent: `main.cf` dan `master.cf` di-backup (`*.bak-<timestamp>`), blok `outN`
 dibuat ulang, sedangkan `sender_access`/`header_checks` yang sudah ada tidak ditimpa.
 
+## Filter spam keluar (Rspamd)
+
+Rspamd dipasang sebagai milter (`inet:127.0.0.1:11332`). Bila rspamd mati, email tetap
+lewat (`milter_default_action = accept`).
+
+| Variabel        | Default   | Keterangan |
+|-----------------|-----------|------------|
+| `RSPAMD_MODE`   | `observe` | `observe`: skor dan tanda saja, tidak ada yang ditolak. `enforce`: skor ≥ `RSPAMD_REJECT` ditolak, kelebihan rate ditahan (4xx, upstream retry). `off`: tanpa rspamd. |
+| `RL_DEFAULT`    | `100`     | Batas email per jam per pengirim envelope |
+| `RL_OVERRIDES`  | **diisi manual** | Batas khusus, mis. `"cs@domain.tld=300 marketing@domain.tld=250"` |
+| `RSPAMD_REJECT` | `15`      | Ambang skor reject pada mode `enforce` |
+
+Alur yang disarankan: jalankan `observe` beberapa hari, lihat skor email asli di web UI,
+lalu deploy ulang dengan `RSPAMD_MODE=enforce`.
+
+- Semua port rspamd (11332/11333/11334) hanya di `127.0.0.1`; script berhenti bila tidak.
+- Web UI: `ssh -L 11334:127.0.0.1:11334 root@<relay>` lalu buka `http://127.0.0.1:11334`.
+  Password ada di `/root/.rspamd_ui_password` (dibuat acak, hanya root).
+- Rspamd 2.7 (paket Ubuntu) dipakai karena rspamd 3.x butuh CPU dengan SSE4.2/SSSE3.
+- String uji GTUBE selalu memaksa reject, juga pada mode `observe`.
+- Ratelimit tidak menghitung pemindaian manual via `rspamc`; uji lewat HTTP
+  `curl -H "From: a@b" -H "IP: x" --data-binary @mail.eml http://127.0.0.1:11333/checkv2`.
+
 ## Keamanan
 
 - **Firewall ufw:** port 25/587 hanya terbuka untuk host di `MYNETWORKS` (selain loopback),

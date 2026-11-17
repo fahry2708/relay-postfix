@@ -8,7 +8,8 @@
 #   sudo NONINTERACTIVE=1 bash deploy_full_relay-update.sh # langsung pakai default / env var
 #
 # Semua nilai bisa di-override lewat env var: DOMAIN, RELAY_FQDN, RELAY_IPS, MYNETWORKS,
-# RATE_DELAY, ROTATE_CRON, DKIM_SELECTOR, DKIM_DOMAIN, DKIM_KEY_PATH.
+# RATE_DELAY, ROTATE_CRON, RSPAMD_MODE, RL_DEFAULT, RL_OVERRIDES, RSPAMD_REJECT,
+# DKIM_SELECTOR, DKIM_DOMAIN, DKIM_KEY_PATH, SKIP_FIREWALL.
 #
 # IP rotasi (RELAY_IPS) dan DKIM SENGAJA tidak punya nilai bawaan: wajib diisi manual
 # saat dijalankan (atau lewat env var), supaya tidak tersimpan di repo.
@@ -68,6 +69,18 @@ ask_manual RELAY_IPS "IP keluar untuk rotasi (pisah spasi, urutan = out1, out2, 
 ask MYNETWORKS  "mynetworks (host yang boleh relay)" "$DEF_MYNETWORKS"
 ask RATE_DELAY  "default_destination_rate_delay"     "$DEF_RATE_DELAY"
 ask ROTATE_CRON "Jadwal cron rotasi IP"              "$DEF_ROTATE_CRON"
+ask RSPAMD_MODE "Mode rspamd (observe/enforce/off)" "observe"
+case "$RSPAMD_MODE" in observe|enforce|off) ;; *) echo "ERROR: RSPAMD_MODE harus observe, enforce, atau off." >&2; exit 1;; esac
+if [ "$RSPAMD_MODE" != "off" ]; then
+  ask RL_DEFAULT    "Batas email/jam per pengirim"   "100"
+  ask RSPAMD_REJECT "Skor reject (mode enforce)"     "15"
+  ask_manual RL_OVERRIDES "Batas khusus per alamat, mis. 'cs@domain.tld=300' (kosongkan bila tidak ada)" optional
+  [[ "$RL_DEFAULT" =~ ^[0-9]+$ ]] || { echo "ERROR: RL_DEFAULT harus angka." >&2; exit 1; }
+  [[ "$RSPAMD_REJECT" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "ERROR: RSPAMD_REJECT harus angka." >&2; exit 1; }
+  for o in $RL_OVERRIDES; do
+    [[ "$o" =~ ^[^=@[:space:]]+@[^=@[:space:]]+=[0-9]+$ ]] || { echo "ERROR: RL_OVERRIDES '$o' harus format alamat=angka." >&2; exit 1; }
+  done
+fi
 ask_manual DKIM_SELECTOR "DKIM selector (kosongkan = relay tidak menandatangani)" optional
 if [ -n "$DKIM_SELECTOR" ]; then
   ask DKIM_DOMAIN "DKIM domain (d=)" "$DOMAIN"
@@ -210,17 +223,133 @@ ODK
   systemctl enable opendkim >/dev/null 2>&1 || true
   systemctl restart opendkim
 
-  postconf -e "milter_default_action = accept"
-  postconf -e "milter_protocol = 6"
-  postconf -e "smtpd_milters = inet:127.0.0.1:8891"
-  postconf -e "non_smtpd_milters = inet:127.0.0.1:8891"
-
   DKIM_P=$(openssl pkey -in "$KEYDIR/$DKIM_SELECTOR.private" -pubout 2>/dev/null \
     | grep -v -- '-----' | tr -d '\n')
   DKIM_TXT="$DKIM_SELECTOR._domainkey.$DKIM_DOMAIN. TXT \"v=DKIM1; k=rsa; p=$DKIM_P\""
+fi
+
+# ---------- Rspamd (filter spam keluar + rate limit per pengirim) ----------
+# RSPAMD_MODE: observe (default) = skor & tanda saja, tidak ada yang ditolak
+#              enforce            = skor >= RSPAMD_REJECT ditolak, kelebihan rate ditahan (4xx)
+#              off                = rspamd tidak dipasang/dilepas dari Postfix
+# RL_DEFAULT  : batas email per jam per pengirim envelope (default 100)
+# RL_OVERRIDES: batas khusus, format "alamat=angka alamat2=angka" (diisi manual, tanpa default)
+if [ "$RSPAMD_MODE" != "off" ]; then
+  echo ">> Konfigurasi rspamd (mode: $RSPAMD_MODE)..."
+  apt-get install -y rspamd redis-server
+  RD=/etc/rspamd/local.d
+  [ -d "$RD.bak-$BACKUP_TS" ] || cp -a "$RD" "$RD.bak-$BACKUP_TS"
+
+  # Semua worker HANYA di localhost. Dulu controller bind 0.0.0.0:11334 dan disalahgunakan.
+  if [ ! -s /root/.rspamd_ui_password ]; then
+    ( umask 077; openssl rand -base64 24 | tr -d '/+=' | cut -c1-24 > /root/.rspamd_ui_password )
+  fi
+  # rspamadm mencetak peringatan CPU ke stdout; ambil baris hash saja
+  RSPAMD_HASH=$(rspamadm pw -p "$(cat /root/.rspamd_ui_password)" 2>/dev/null | grep -E '^\$[0-9]+\$' | tail -1)
+  cat > $RD/worker-controller.inc <<EOF
+# Web UI hanya localhost. Akses: ssh -L 11334:127.0.0.1:11334 root@<relay>
+bind_socket = "127.0.0.1:11334";
+password = "$RSPAMD_HASH";
+enable_password = "$RSPAMD_HASH";
+EOF
+  chmod 640 $RD/worker-controller.inc; chown root:_rspamd $RD/worker-controller.inc
+  echo 'bind_socket = "127.0.0.1:11333";' > $RD/worker-normal.inc
+  cat > $RD/worker-proxy.inc <<'EOF'
+bind_socket = "127.0.0.1:11332";
+milter = yes;
+timeout = 120s;
+upstream "local" {
+  default = yes;
+  self_scan = yes;
+}
+EOF
+  echo 'count = -1;' > $RD/worker-fuzzy.inc
+  echo 'servers = "127.0.0.1";' > $RD/redis.conf
+  echo 'enabled = false;' > $RD/greylist.conf
+  echo 'use = [];' > $RD/milter_headers.conf   # jangan tambah header rspamd ke email keluar
+
+  # Upstream (MYNETWORKS) = lokal: cek berbasis IP (SPF/RBL) dilewati, konten tetap dicek
+  LOCAL_ADDRS=$(tr ',' '\n' <<< "$MYNETWORKS" | sed 's/[][ ]//g' | grep -v '^$' | paste -sd, | sed 's/,/, /g')
+  cat > $RD/options.inc <<EOF
+local_addrs = [$LOCAL_ADDRS];
+dns {
+  nameserver = ["127.0.0.53"];
+}
+EOF
+
+  if [ "$RSPAMD_MODE" = "enforce" ]; then
+    cat > $RD/actions.conf <<EOF
+reject = $RSPAMD_REJECT;
+add_header = null;
+rewrite_subject = null;
+greylist = null;
+EOF
+    RL_SYMBOL_LINE=""
+  else
+    cat > $RD/actions.conf <<'EOF'
+# Observasi: semua aksi dimatikan; skor tetap dicatat di log/history.
+# Catatan: string uji GTUBE tetap memaksa reject (pre-result bawaan rspamd).
+reject = null;
+add_header = null;
+rewrite_subject = null;
+greylist = null;
+EOF
+    RL_SYMBOL_LINE='symbol = "RATELIMITED";'
+  fi
+
+  # Rate limit per pengirim envelope. rspamd 2.7: 'symbol' hanya bisa di tingkat modul.
+  OVR_ADDRS=""; OVR_RATES=""
+  for o in $RL_OVERRIDES; do
+    a=${o%%=*}; n=${o##*=}
+    a=$(tr 'A-Z' 'a-z' <<< "$a")
+    OVR_ADDRS+="${OVR_ADDRS:+, }'$a'"
+    key=$(tr -c 'a-z0-9\n' '_' <<< "$a")
+    OVR_RATES+="  sender_${key} = {
+    selector = \"from:addr.lower.in('$a')\";
+    bucket = { burst = $n; rate = \"$n / 1h\"; }
+  }
+"
+  done
+  if [ -n "$OVR_ADDRS" ]; then
+    DEF_SELECTOR="from:addr.lower.not_in($OVR_ADDRS)"
+  else
+    DEF_SELECTOR="from:addr.lower"
+  fi
+  cat > $RD/ratelimit.conf <<EOF
+# Mode $RSPAMD_MODE. observe: hanya simbol RATELIMITED; enforce: kelebihan ditahan (4xx, upstream retry).
+$RL_SYMBOL_LINE
+rates {
+  sender_default = {
+    selector = "$DEF_SELECTOR";
+    bucket = { burst = $RL_DEFAULT; rate = "$RL_DEFAULT / 1h"; }
+  }
+$OVR_RATES}
+EOF
+
+  rspamadm configtest 2>&1 | grep -vE 'hyperscan|SSSE3' || true
+  rspamadm configtest >/dev/null 2>&1 || { echo "ERROR: konfigurasi rspamd tidak valid." >&2; exit 1; }
+  systemctl enable rspamd redis-server >/dev/null 2>&1 || true
+  systemctl restart rspamd
+  sleep 3
+  if ss -ltnp | grep rspamd | awk '{print $4}' | grep -vq '^127\.0\.0\.1:'; then
+    echo "ERROR: ada port rspamd yang tidak di 127.0.0.1!" >&2
+    ss -ltnp | grep rspamd >&2
+    exit 1
+  fi
+fi
+
+# ---------- Milter Postfix (rspamd lalu opendkim, agar tanda tangan paling akhir) ----------
+MILTERS=""
+[ "$RSPAMD_MODE" != "off" ] && MILTERS="inet:127.0.0.1:11332"
+[ -n "$DKIM_SELECTOR" ] && MILTERS="${MILTERS:+$MILTERS, }inet:127.0.0.1:8891"
+if [ -n "$MILTERS" ]; then
+  postconf -e "milter_default_action = accept"   # milter mati = email tetap lewat
+  postconf -e "milter_protocol = 6"
+  postconf -e "milter_mail_macros = i {mail_addr} {client_addr} {client_name} {auth_authen}"
+  postconf -e "smtpd_milters = $MILTERS"
+  postconf -e "non_smtpd_milters = $MILTERS"
 else
-  # Tanpa DKIM di relay (ditandatangani upstream): lepas milter
-  postconf -X smtpd_milters non_smtpd_milters milter_default_action milter_protocol 2>/dev/null || true
+  postconf -X smtpd_milters non_smtpd_milters milter_default_action milter_protocol milter_mail_macros 2>/dev/null || true
 fi
 
 # ---------- Map blokir pengirim ----------
