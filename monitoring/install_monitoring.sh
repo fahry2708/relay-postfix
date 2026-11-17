@@ -14,6 +14,13 @@ for f in postfix_relay.mtail rspamd_relay.mtail relay-metrics.sh grafana-relay-d
 done
 
 RETENTION=${RETENTION:-30d}
+# PUBLIC_DOMAIN (opsional, diisi manual): buka dashboard di https://<domain> lewat nginx.
+# Butuh sertifikat Let's Encrypt di /etc/letsencrypt/live/<domain>/. Kosong = hanya SSH tunnel.
+PUBLIC_DOMAIN=${PUBLIC_DOMAIN:-}
+if [ -n "$PUBLIC_DOMAIN" ] && [ ! -f "/etc/letsencrypt/live/$PUBLIC_DOMAIN/fullchain.pem" ]; then
+  echo "ERROR: sertifikat untuk $PUBLIC_DOMAIN tidak ada. Buat dulu: certbot certonly --nginx -d $PUBLIC_DOMAIN" >&2
+  exit 1
+fi
 export DEBIAN_FRONTEND=noninteractive
 
 # ---------- Log Postfix tidak boleh dobel (mtail & fail2ban menghitung per baris) ----------
@@ -179,6 +186,11 @@ external_enabled = false
 mode = file
 level = warn
 EOF
+if [ -n "$PUBLIC_DOMAIN" ]; then
+  # Tetap listen 127.0.0.1; nginx yang membuka ke publik. Cookie hanya lewat HTTPS.
+  sed -i "s|^http_port = 3000$|http_port = 3000\ndomain = $PUBLIC_DOMAIN\nroot_url = https://$PUBLIC_DOMAIN/|" "$GINI"
+  sed -i 's|^cookie_secure = false$|cookie_secure = true\ncookie_samesite = strict|' "$GINI"
+fi
 chown root:grafana "$GINI"; chmod 640 "$GINI"
 
 install -d -m 755 /etc/grafana/provisioning/datasources /etc/grafana/provisioning/dashboards /var/lib/grafana/dashboards
@@ -222,6 +234,69 @@ if ! curl -s -o /dev/null -w '%{http_code}' -u "admin:$(cat /root/.grafana_admin
   exit 1
 fi
 
+# ---------- Akses publik HTTPS (opsional) ----------
+if [ -n "$PUBLIC_DOMAIN" ]; then
+  echo ">> nginx: https://$PUBLIC_DOMAIN -> Grafana"
+  apt-get install -y nginx
+  cat > /etc/nginx/conf.d/relay-hardening.conf <<'EOF'
+server_tokens off;
+# Batasi percobaan login Grafana per IP (Grafana juga mengunci akun setelah login gagal berulang)
+limit_req_zone $binary_remote_addr zone=grafana_login:10m rate=10r/m;
+limit_req_status 429;
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+EOF
+  cat > /etc/nginx/sites-available/relay-grafana.conf <<EOF
+# Dashboard Grafana publik. Hanya Grafana yang diteruskan; Prometheus/mtail/rspamd tetap 127.0.0.1.
+server {
+    listen 80;
+    server_name $PUBLIC_DOMAIN;
+    location /.well-known/acme-challenge/ { root /var/www/html; }
+    location / { return 301 https://$PUBLIC_DOMAIN\$request_uri; }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name $PUBLIC_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$PUBLIC_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PUBLIC_DOMAIN/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "same-origin" always;
+
+    client_max_body_size 5m;
+
+    proxy_set_header Host              \$host;
+    proxy_set_header X-Real-IP         \$remote_addr;
+    proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+
+    location = /login {
+        limit_req zone=grafana_login burst=5 nodelay;
+        proxy_pass http://127.0.0.1:3000;
+    }
+    location /api/live/ {
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_set_header Host       \$host;
+        proxy_pass http://127.0.0.1:3000;
+    }
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+    }
+}
+EOF
+  ln -sf /etc/nginx/sites-available/relay-grafana.conf /etc/nginx/sites-enabled/relay-grafana.conf
+  rm -f /etc/nginx/sites-enabled/relay-acme.conf   # digantikan blok port 80 di atas
+  nginx -t
+  systemctl reload nginx
+  command -v ufw >/dev/null && ufw allow 443/tcp comment "https grafana dashboard" >/dev/null || true
+fi
+
 # ---------- Verifikasi: semua port monitoring hanya di 127.0.0.1 ----------
 sleep 2
 BAD=$(ss -ltnp | awk 'NR>1{print $4}' | grep -E ':(3000|3903|9090|9100)$' | grep -v '^127\.0\.0\.1:' || true)
@@ -235,6 +310,11 @@ echo "=== MONITORING SIAP ==="
 for s in prometheus prometheus-node-exporter mtail grafana-server; do printf "  %-26s %s\n" "$s" "$(systemctl is-active $s)"; done
 echo
 echo "Buka dashboard:"
-echo "  ssh -L 3000:127.0.0.1:3000 root@<relay>"
-echo "  http://127.0.0.1:3000  (user: admin, password: cat /root/.grafana_admin_password)"
+if [ -n "$PUBLIC_DOMAIN" ]; then
+  echo "  https://$PUBLIC_DOMAIN"
+else
+  echo "  ssh -L 3000:127.0.0.1:3000 root@<relay>"
+  echo "  http://127.0.0.1:3000"
+fi
+echo "  user: admin, password: cat /root/.grafana_admin_password"
 echo "  Dashboard: Relay > Relay Postfix"

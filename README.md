@@ -102,13 +102,19 @@ sudo bash monitoring/install_monitoring.sh
 Memasang Prometheus, Grafana, mtail, node_exporter, dan unbound. **Semua hanya listen di
 `127.0.0.1`**; script berhenti bila ada port monitoring yang terbuka ke luar.
 
-Buka dashboard lewat SSH tunnel:
+Buka dashboard:
 
-```bash
-ssh -L 3000:127.0.0.1:3000 root@<relay>
-# lalu buka http://127.0.0.1:3000  (user admin, password: cat /root/.grafana_admin_password)
-# Dashboard: Relay > Relay Postfix
-```
+- **Publik lewat domain** (opsional): `sudo PUBLIC_DOMAIN=relay.domain.tld bash monitoring/install_monitoring.sh`
+  lalu buka `https://relay.domain.tld`. Butuh sertifikat Let's Encrypt untuk domain itu.
+  nginx hanya meneruskan Grafana (HTTPS wajib, HTTP dialihkan), login dibatasi 10/menit per IP,
+  cookie hanya HTTPS. Prometheus, mtail, dan rspamd tetap hanya `127.0.0.1`.
+- **Tanpa domain**: lewat SSH tunnel
+  ```bash
+  ssh -L 3000:127.0.0.1:3000 root@<relay>
+  # lalu buka http://127.0.0.1:3000
+  ```
+
+User `admin`, password: `cat /root/.grafana_admin_password`. Dashboard: **Relay > Relay Postfix**.
 
 | Komponen | Port | Isi |
 |---|---|---|
