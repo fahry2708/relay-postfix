@@ -110,7 +110,20 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo ">> Install paket..."
 apt-get update -y
-apt-get install -y postfix pflogsumm dnsutils rsyslog fail2ban cron openssl
+apt-get install -y postfix pflogsumm dnsutils rsyslog fail2ban cron openssl ufw
+
+# JANGAN pasang proxy (HAProxy dll.) di depan port 25: Postfix akan melihat semua klien
+# sebagai 127.0.0.1 (anggota mynetworks) sehingga relay menjadi open relay.
+if systemctl is-active --quiet haproxy 2>/dev/null; then
+  echo "ERROR: haproxy aktif. Matikan dulu (systemctl disable --now haproxy)." >&2
+  exit 1
+fi
+
+# localhost wajib resolve (rspamd/opendkim bind ke localhost)
+if ! getent hosts localhost >/dev/null; then
+  echo ">> Menambahkan '127.0.0.1 localhost' ke /etc/hosts"
+  sed -i '1i 127.0.0.1 localhost' /etc/hosts
+fi
 if [ -n "$DKIM_SELECTOR" ]; then
   apt-get install -y opendkim opendkim-tools
 fi
@@ -131,7 +144,9 @@ postconf -e "mydestination ="
 postconf -e "relayhost ="
 postconf -e "mynetworks = $MYNETWORKS"
 postconf -e "inet_interfaces = all"
-postconf -e "inet_protocols = all"
+# IPv4 saja: smtp_bind_address hanya IPv4, sehingga IPv6 lolos dari rotasi dan
+# ditolak Gmail (550 5.7.25) karena tidak punya PTR.
+postconf -e "inet_protocols = ipv4"
 postconf -e "compatibility_level = 3.6"
 
 # TLS (snakeoil default Ubuntu; ganti dengan sertifikat asli bila ada)
@@ -302,6 +317,35 @@ cat > /etc/cron.d/postfix-rotate <<CRON
 ${ROTATE_CRON} root ${ROTATOR} >/dev/null 2>&1
 CRON
 chmod 644 /etc/cron.d/postfix-rotate
+
+# ---------- Firewall (ufw) ----------
+# 25/587 hanya dari host di MYNETWORKS (selain loopback). SSH dan 80 (certbot) terbuka.
+# Ganti IP upstream: jalankan ulang script dengan MYNETWORKS baru (aturan smtp dibuat ulang).
+if [ "${SKIP_FIREWALL:-0}" != "1" ]; then
+  echo ">> Konfigurasi firewall ufw..."
+  SMTP_CLIENTS=$(tr ',' '\n' <<< "$MYNETWORKS" | sed 's/[][ ]//g' \
+    | grep -vE '^$|^127\.|^::1' | grep -E '^[0-9.]+(/[0-9]+)?$' || true)
+  ufw default deny incoming >/dev/null
+  ufw default allow outgoing >/dev/null
+  ufw allow 22/tcp comment "ssh" >/dev/null
+  ufw allow 80/tcp comment "http (certbot renew)" >/dev/null
+  # Hapus aturan smtp lama lalu buat ulang dari MYNETWORKS
+  while n=$(ufw status numbered | grep -m1 "# smtp upstream" | grep -oP '^\[\s*\K[0-9]+'); [ -n "$n" ]; do
+    ufw --force delete "$n" >/dev/null
+  done
+  for c in $SMTP_CLIENTS; do
+    ufw allow proto tcp from "$c" to any port 25,587 comment "smtp upstream" >/dev/null
+  done
+  if ! ufw status | grep -q "Status: active"; then
+    # Pengaman: bila SSH terkunci, ufw otomatis dimatikan setelah 5 menit.
+    # Batalkan setelah login SSH baru berhasil: systemctl stop ufw-failsafe.timer
+    systemd-run --unit=ufw-failsafe --on-active=300 /usr/sbin/ufw --force disable >/dev/null 2>&1 || true
+    ufw --force enable
+    echo "   ufw baru diaktifkan. Uji SSH dari terminal lain lalu: systemctl stop ufw-failsafe.timer"
+  fi
+  [ -z "$SMTP_CLIENTS" ] && echo "WARNING: tidak ada IP upstream di MYNETWORKS; port 25/587 tertutup untuk semua host luar." >&2
+  ufw status numbered
+fi
 
 # ---------- fail2ban ----------
 echo ">> Konfigurasi fail2ban (postfix + sshd, aksi route)..."

@@ -51,6 +51,24 @@ script mencetak record TXT yang harus ada di DNS.
 Script idempotent: `main.cf` dan `master.cf` di-backup (`*.bak-<timestamp>`), blok `outN`
 dibuat ulang, sedangkan `sender_access`/`header_checks` yang sudah ada tidak ditimpa.
 
+## Keamanan
+
+- **Firewall ufw:** port 25/587 hanya terbuka untuk host di `MYNETWORKS` (selain loopback),
+  SSH (22) dan HTTP (80, untuk perpanjangan certbot) terbuka. Saat ufw pertama kali
+  diaktifkan, ada pengaman yang otomatis mematikannya setelah 5 menit; uji SSH dari terminal
+  lain lalu jalankan `systemctl stop ufw-failsafe.timer`. Lewati dengan `SKIP_FIREWALL=1`.
+- **Ganti IP upstream:** jalankan ulang script dengan `MYNETWORKS` baru; aturan
+  `smtp upstream` di ufw dibuat ulang. Atau manual:
+  `ufw allow proto tcp from <IP> to any port 25,587 comment "smtp upstream"` dan
+  sesuaikan `postconf -e "mynetworks = ..."`.
+- **Jangan pasang proxy (HAProxy dll.) di depan port 25.** Postfix akan melihat semua
+  klien sebagai `127.0.0.1` (anggota `mynetworks`) dan relay menjadi open relay. Script
+  berhenti bila haproxy aktif.
+- **Kirim lewat IPv4 saja** (`inet_protocols = ipv4`): `smtp_bind_address` hanya IPv4,
+  sehingga IPv6 lolos dari rotasi dan ditolak Gmail (`550 5.7.25`, tanpa PTR).
+- Web UI apa pun (rspamd, Grafana) hanya di-bind ke `127.0.0.1`; akses lewat SSH tunnel
+  atau reverse proxy dengan HTTPS + login.
+
 ## Monitoring
 
 ```bash
