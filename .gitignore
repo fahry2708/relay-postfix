@@ -1,0 +1,4 @@
+# Jangan commit private key DKIM / kunci apa pun
+*.private
+*.key
+*.pem
