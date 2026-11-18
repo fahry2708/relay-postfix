@@ -301,6 +301,7 @@ EOF
   echo 'servers = "127.0.0.1";' > $RD/redis.conf
   echo 'enabled = false;' > $RD/greylist.conf
   echo 'use = [];' > $RD/milter_headers.conf   # jangan tambah header rspamd ke email keluar
+  echo 'nrows = 2000;' > $RD/history_redis.conf  # history web UI 2000 email (default 200 = beberapa jam)
 
   # Upstream (MYNETWORKS) = lokal: cek berbasis IP (SPF/RBL) dilewati, konten tetap dicek
   LOCAL_ADDRS=$(tr ',' '\n' <<< "$MYNETWORKS" | sed 's/[][ ]//g' | grep -v '^$' | paste -sd, | sed 's/,/, /g')
