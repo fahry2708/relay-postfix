@@ -8,7 +8,7 @@
 #   sudo NONINTERACTIVE=1 bash deploy_full_relay-update.sh # langsung pakai default / env var
 #
 # Semua nilai bisa di-override lewat env var: DOMAIN, RELAY_FQDN, RELAY_IPS, MYNETWORKS,
-# RATE_DELAY, ROTATE_CRON, RSPAMD_MODE, RL_DEFAULT, RL_OVERRIDES, RSPAMD_REJECT,
+# RATE_DELAY, ROTATE_CRON, RSPAMD_MODE, RL_MODE, RL_DEFAULT, RL_OVERRIDES, RSPAMD_REJECT,
 # DKIM_SELECTOR, DKIM_DOMAIN, DKIM_KEY_PATH, SKIP_FIREWALL.
 #
 # IP rotasi (RELAY_IPS) dan DKIM SENGAJA tidak punya nilai bawaan: wajib diisi manual
@@ -72,6 +72,8 @@ ask ROTATE_CRON "Jadwal cron rotasi IP"              "$DEF_ROTATE_CRON"
 ask RSPAMD_MODE "Mode rspamd (observe/enforce/off)" "observe"
 case "$RSPAMD_MODE" in observe|enforce|off) ;; *) echo "ERROR: RSPAMD_MODE harus observe, enforce, atau off." >&2; exit 1;; esac
 if [ "$RSPAMD_MODE" != "off" ]; then
+  ask RL_MODE       "Mode rate limit (observe/enforce)" "$([ "$RSPAMD_MODE" = enforce ] && echo enforce || echo observe)"
+  case "$RL_MODE" in observe|enforce) ;; *) echo "ERROR: RL_MODE harus observe atau enforce." >&2; exit 1;; esac
   ask RL_DEFAULT    "Batas email/jam per pengirim"   "100"
   ask RSPAMD_REJECT "Skor reject (mode enforce)"     "15"
   ask_manual RL_OVERRIDES "Batas khusus per alamat, mis. 'cs@domain.tld=300' (kosongkan bila tidak ada)" optional
@@ -177,7 +179,8 @@ postconf -e "smtpd_delay_reject = yes"
 postconf -e "disable_vrfy_command = yes"
 postconf -e "smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
 postconf -e "smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination, reject_rbl_client zen.spamhaus.org, reject_rbl_client bl.spamcop.net, reject_rbl_client b.barracudacentral.org"
-postconf -e "smtpd_sender_restrictions = permit_mynetworks, permit_sasl_authenticated, check_sender_access hash:/etc/postfix/sender_access, reject_unknown_sender_domain, reject_non_fqdn_sender"
+# sender_hold dicek PALING DEPAN (sebelum permit_mynetworks) agar akun upstream yang dibobol bisa ditahan.
+postconf -e "smtpd_sender_restrictions = check_sender_access hash:/etc/postfix/sender_hold, permit_mynetworks, permit_sasl_authenticated, check_sender_access hash:/etc/postfix/sender_access, reject_unknown_sender_domain, reject_non_fqdn_sender"
 postconf -e "header_checks = regexp:/etc/postfix/header_checks"
 
 # Rate limit
@@ -230,7 +233,8 @@ fi
 
 # ---------- Rspamd (filter spam keluar + rate limit per pengirim) ----------
 # RSPAMD_MODE: observe (default) = skor & tanda saja, tidak ada yang ditolak
-#              enforce            = skor >= RSPAMD_REJECT ditolak, kelebihan rate ditahan (4xx)
+#              enforce            = skor >= RSPAMD_REJECT ditolak
+# RL_MODE     : observe = kelebihan rate hanya ditandai; enforce = kelebihan ditahan (4xx, upstream retry)
 #              off                = rspamd tidak dipasang/dilepas dari Postfix
 # RL_DEFAULT  : batas email per jam per pengirim envelope (default 100)
 # RL_OVERRIDES: batas khusus, format "alamat=angka alamat2=angka" (diisi manual, tanpa default)
@@ -314,7 +318,6 @@ add_header = null;
 rewrite_subject = null;
 greylist = null;
 EOF
-    RL_SYMBOL_LINE=""
   else
     cat > $RD/actions.conf <<'EOF'
 # Observasi: semua aksi dimatikan; skor tetap dicatat di log/history.
@@ -324,10 +327,11 @@ add_header = null;
 rewrite_subject = null;
 greylist = null;
 EOF
-    RL_SYMBOL_LINE='symbol = "RATELIMITED";'
   fi
 
   # Rate limit per pengirim envelope. rspamd 2.7: 'symbol' hanya bisa di tingkat modul.
+  # RL_MODE terpisah dari RSPAMD_MODE: batas kirim bisa enforce walau skor spam masih observasi.
+  if [ "$RL_MODE" = "enforce" ]; then RL_SYMBOL_LINE=""; else RL_SYMBOL_LINE='symbol = "RATELIMITED";'; fi
   OVR_ADDRS=""; OVR_RATES=""
   for o in $RL_OVERRIDES; do
     a=${o%%=*}; n=${o##*=}
@@ -346,7 +350,7 @@ EOF
     DEF_SELECTOR="from:addr.lower"
   fi
   cat > $RD/ratelimit.conf <<EOF
-# Mode $RSPAMD_MODE. observe: hanya simbol RATELIMITED; enforce: kelebihan ditahan (4xx, upstream retry).
+# Rate limit mode $RL_MODE. observe: hanya simbol RATELIMITED; enforce: kelebihan ditahan (4xx, upstream retry).
 $RL_SYMBOL_LINE
 rates {
   sender_default = {
@@ -394,7 +398,19 @@ if [ ! -f /etc/postfix/header_checks ]; then
 # /^From:.*alamat@domain\.tld/i REJECT sender blocked
 EOF
 fi
+if [ ! -f /etc/postfix/sender_hold ]; then
+  cat > /etc/postfix/sender_hold <<'EOF'
+# Akun yang dibobol: email ditahan di hold queue, tidak dikirim keluar.
+# alamat@domain.tld    HOLD akun dibobol, ditahan sementara
+# Lihat: postqueue -p | grep '!'   Lepas: postsuper -H <id>   Hapus: postsuper -d <id>
+EOF
+fi
+# Catat IP asal login SMTP (ESMTPSA) di server upstream -> deteksi akun dibobol (monitoring/relay-alert.sh)
+grep -q 'auth-origin' /etc/postfix/header_checks || cat >> /etc/postfix/header_checks <<'EOF'
+/^Received: from .*\[([0-9a-fA-F.:]+)\]\)?[[:space:]]+by [^[:space:]]+ \(Postfix\) with ESMTPSA/ WARN auth-origin $1
+EOF
 postmap hash:/etc/postfix/sender_access
+postmap hash:/etc/postfix/sender_hold
 
 # ---------- master.cf ----------
 echo ">> Konfigurasi master.cf (submission + transport out1..out$N)..."

@@ -58,7 +58,8 @@ lewat (`milter_default_action = accept`).
 
 | Variabel        | Default   | Keterangan |
 |-----------------|-----------|------------|
-| `RSPAMD_MODE`   | `observe` | `observe`: skor dan tanda saja, tidak ada yang ditolak. `enforce`: skor ≥ `RSPAMD_REJECT` ditolak, kelebihan rate ditahan (4xx, upstream retry). `off`: tanpa rspamd. |
+| `RSPAMD_MODE`   | `observe` | `observe`: skor dan tanda saja, tidak ada yang ditolak. `enforce`: skor ≥ `RSPAMD_REJECT` ditolak. `off`: tanpa rspamd. |
+| `RL_MODE`       | ikut `RSPAMD_MODE` | `observe`: kelebihan rate hanya ditandai `RATELIMITED`. `enforce`: kelebihan ditahan (4xx, upstream retry). Bisa `enforce` walau skor masih `observe`. |
 | `RL_DEFAULT`    | `100`     | Batas email per jam per pengirim envelope |
 | `RL_OVERRIDES`  | **diisi manual** | Batas khusus, mis. `"cs@domain.tld=300 marketing@domain.tld=250"` |
 | `RSPAMD_REJECT` | `15`      | Ambang skor reject pada mode `enforce` |
@@ -92,6 +93,24 @@ lalu deploy ulang dengan `RSPAMD_MODE=enforce`.
   sehingga IPv6 lolos dari rotasi dan ditolak Gmail (`550 5.7.25`, tanpa PTR).
 - Web UI apa pun (rspamd, Grafana) hanya di-bind ke `127.0.0.1`; akses lewat SSH tunnel
   atau reverse proxy dengan HTTPS + login.
+
+## Akun upstream dibobol
+
+Penyerang yang tahu password akun di server email upstream (mis. Zimbra) mengirim lewat SMTP
+AUTH di upstream, lalu emailnya lolos SPF/DKIM/DMARC dan skor rspamd rendah. Relay hanya
+melihat IP upstream. Pertahanannya:
+
+- **Catat IP login asal.** `header_checks` mencatat IP dari header
+  `Received: ... with ESMTPSA` sebagai `warning: header ... auth-origin <IP>` di `mail.log`.
+  Satu akun yang login dari banyak IP berbeda = indikasi password bocor.
+- **Alert** (`monitoring/relay-alert.sh`, cron 5 menit): akun login dari > 3 IP dalam 24 jam,
+  pengirim > 150 email/jam, kena ratelimit, IP relay masuk blacklist, deferred menumpuk,
+  layanan mati. Dikirim ke Telegram bila `/etc/relay-alert.conf` (chmod 600) diisi
+  `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID`; selain itu ke `/var/log/relay-alert.log` dan syslog.
+- **Tahan akun** tanpa menghapus email: tambahkan `alamat@domain.tld HOLD alasan` ke
+  `/etc/postfix/sender_hold`, lalu `postmap hash:/etc/postfix/sender_hold && postfix reload`.
+  Map ini dicek sebelum `permit_mynetworks`. Email tertahan: `postqueue -p | grep '!'`;
+  lepas `postsuper -H <id>`, hapus `postsuper -d <id>`. Ganti password di upstream lebih dulu.
 
 ## Monitoring (Grafana)
 

@@ -1,0 +1,9 @@
+# /etc/relay-alert.conf  (chmod 600, JANGAN di-commit dengan isi asli)
+# Bot: chat @BotFather -> /newbot -> token. Chat ID: kirim pesan ke bot / tambahkan bot ke grup,
+# lalu buka https://api.telegram.org/bot<TOKEN>/getUpdates dan ambil "chat":{"id":...}
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_CHAT_ID=""
+# ALERT_SENDER_PER_HOUR=150
+# ALERT_AUTH_IPS_24H=3
+# ALERT_DEFERRED=200
+# ALERT_REPEAT_SECONDS=3600
