@@ -2,6 +2,8 @@
 # Bot: chat @BotFather -> /newbot -> token. Chat ID: kirim pesan ke bot / tambahkan bot ke grup,
 # lalu buka https://api.telegram.org/bot<TOKEN>/getUpdates dan ambil "chat":{"id":...}
 TELEGRAM_BOT_TOKEN=""
+# Satu grup (disarankan) atau beberapa chat ID dipisah spasi, mis. "-1001234567890 123456789".
+# Untuk chat pribadi, tiap orang harus menekan Start di bot dulu.
 TELEGRAM_CHAT_ID=""
 # ALERT_SENDER_PER_HOUR=150
 # ALERT_AUTH_IPS_24H=3

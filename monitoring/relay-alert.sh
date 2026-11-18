@@ -90,9 +90,11 @@ printf '%s %s\n' "$(date '+%F %T')" "$plain" >> "$LOG"
 logger -t relay-alert -- "$plain"
 if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
   msg="<b>[relay] $HOST</b>"$'\n'"$(printf '%s\n' "${ALERTS[@]}")"
-  curl -s -m 15 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-    --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" --data-urlencode "parse_mode=HTML" \
-    --data-urlencode "disable_web_page_preview=true" --data-urlencode "text=$msg" | grep -q '"ok":true' ||
-    logger -t relay-alert "gagal kirim Telegram"
+  for chat in $TELEGRAM_CHAT_ID; do   # boleh beberapa chat ID dipisah spasi (grup dan/atau pribadi)
+    curl -s -m 15 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+      --data-urlencode "chat_id=$chat" --data-urlencode "parse_mode=HTML" \
+      --data-urlencode "disable_web_page_preview=true" --data-urlencode "text=$msg" | grep -q '"ok":true' ||
+      logger -t relay-alert "gagal kirim Telegram ke chat $chat"
+  done
 fi
 exit 0
