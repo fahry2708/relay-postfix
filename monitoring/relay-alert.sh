@@ -15,6 +15,7 @@ ALERT_SENDER_PER_HOUR=150      # email/jam per pengirim (batas keras rspamd 300/
 ALERT_AUTH_IPS_24H=3           # IP login SMTP berbeda per akun dalam 24 jam
 ALERT_DEFERRED=200             # email deferred di antrian
 ALERT_REPEAT_SECONDS=3600      # alert yang sama tidak diulang sebelum ini
+ALERT_SENDER_EXCLUDE=""        # pengirim (pisah spasi) yang tidak dicek volumenya, mis. akun broadcast
 PROM=${PROM:-http://127.0.0.1:9090}
 MAILLOG=${MAILLOG:-/var/log/mail.log}
 STATE_DIR=${STATE_DIR:-/var/lib/relay-alert}
@@ -41,6 +42,7 @@ add() {  # add <kunci-dedup> <pesan>
 # 1) Volume per pengirim (1 jam terakhir, metrik mtail dari log rspamd)
 while read -r sender n; do
   [ -z "${n:-}" ] && continue
+  [[ " ${ALERT_SENDER_EXCLUDE,,} " == *" ${sender,,} "* ]] && continue
   add "vol:$sender:$(date +%Y%m%d%H)" "📈 Pengirim <b>$sender</b> mengirim <b>${n%.*}</b> email dalam 1 jam terakhir (ambang $ALERT_SENDER_PER_HOUR)."
 done < <(prom "sum by (sender) (increase(rspamd_relay_messages_total{sender!=\"\"}[1h])) > $ALERT_SENDER_PER_HOUR")
 

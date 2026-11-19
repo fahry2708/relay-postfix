@@ -8,7 +8,7 @@
 #   sudo NONINTERACTIVE=1 bash deploy_full_relay-update.sh # langsung pakai default / env var
 #
 # Semua nilai bisa di-override lewat env var: DOMAIN, RELAY_FQDN, RELAY_IPS, MYNETWORKS,
-# RATE_DELAY, ROTATE_CRON, RSPAMD_MODE, RL_MODE, RL_DEFAULT, RL_OVERRIDES, RSPAMD_REJECT,
+# RATE_DELAY, ROTATE_CRON, RSPAMD_MODE, RL_MODE, RL_DEFAULT, RL_OVERRIDES, RL_EXEMPT, RSPAMD_REJECT,
 # DKIM_SELECTOR, DKIM_DOMAIN, DKIM_KEY_PATH, SKIP_FIREWALL.
 #
 # IP rotasi (RELAY_IPS) dan DKIM SENGAJA tidak punya nilai bawaan: wajib diisi manual
@@ -77,6 +77,7 @@ if [ "$RSPAMD_MODE" != "off" ]; then
   ask RL_DEFAULT    "Batas email/jam per pengirim"   "100"
   ask RSPAMD_REJECT "Skor reject (mode enforce)"     "15"
   ask_manual RL_OVERRIDES "Batas khusus per alamat, mis. 'cs@domain.tld=300' (kosongkan bila tidak ada)" optional
+  ask_manual RL_EXEMPT "Pengirim tanpa batas kirim, mis. akun broadcast (pisah spasi, kosongkan bila tidak ada)" optional
   [[ "$RL_DEFAULT" =~ ^[0-9]+$ ]] || { echo "ERROR: RL_DEFAULT harus angka." >&2; exit 1; }
   [[ "$RSPAMD_REJECT" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "ERROR: RSPAMD_REJECT harus angka." >&2; exit 1; }
   for o in $RL_OVERRIDES; do
@@ -238,6 +239,7 @@ fi
 #              off                = rspamd tidak dipasang/dilepas dari Postfix
 # RL_DEFAULT  : batas email per jam per pengirim envelope (default 100)
 # RL_OVERRIDES: batas khusus, format "alamat=angka alamat2=angka" (diisi manual, tanpa default)
+# RL_EXEMPT   : pengirim yang dilewati ratelimit sama sekali (settings rspamd), mis. akun broadcast
 if [ "$RSPAMD_MODE" != "off" ]; then
   echo ">> Konfigurasi rspamd (mode: $RSPAMD_MODE)..."
   apt-get install -y rspamd redis-server unbound
@@ -360,6 +362,23 @@ rates {
   }
 $OVR_RATES}
 EOF
+
+  # Pengecualian ratelimit lewat modul settings: RATELIMIT_CHECK/UPDATE dimatikan untuk pengirim ini.
+  if [ -n "$RL_EXEMPT" ]; then
+    EX_LIST=$(for a in $RL_EXEMPT; do printf '"%s", ' "$(tr 'A-Z' 'a-z' <<< "$a")"; done | sed 's/, $//')
+    cat > $RD/settings.conf <<EOF
+# Pengirim tanpa ratelimit (RL_EXEMPT). Alert volume Telegram tetap bisa diatur terpisah.
+ratelimit_exempt {
+  priority = high;
+  from = [$EX_LIST];
+  apply {
+    symbols_disabled = ["RATELIMIT_CHECK", "RATELIMIT_UPDATE"];
+  }
+}
+EOF
+  else
+    rm -f $RD/settings.conf
+  fi
 
   rspamadm configtest 2>&1 | grep -vE 'hyperscan|SSSE3' || true
   rspamadm configtest >/dev/null 2>&1 || { echo "ERROR: konfigurasi rspamd tidak valid." >&2; exit 1; }

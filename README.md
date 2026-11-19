@@ -62,6 +62,7 @@ lewat (`milter_default_action = accept`).
 | `RL_MODE`       | ikut `RSPAMD_MODE` | `observe`: kelebihan rate hanya ditandai `RATELIMITED`. `enforce`: kelebihan ditahan (4xx, upstream retry). Bisa `enforce` walau skor masih `observe`. |
 | `RL_DEFAULT`    | `100`     | Batas email per jam per pengirim envelope |
 | `RL_OVERRIDES`  | **diisi manual** | Batas khusus, mis. `"cs@domain.tld=300 marketing@domain.tld=250"` |
+| `RL_EXEMPT`     | **diisi manual** | Pengirim tanpa batas kirim (mis. akun broadcast), pisah spasi. Untuk Telegram, isi juga `ALERT_SENDER_EXCLUDE` di `/etc/relay-alert.conf` |
 | `RSPAMD_REJECT` | `15`      | Ambang skor reject pada mode `enforce` |
 
 Alur yang disarankan: jalankan `observe` beberapa hari, lihat skor email asli di web UI,

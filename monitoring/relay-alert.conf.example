@@ -9,3 +9,5 @@ TELEGRAM_CHAT_ID=""
 # ALERT_AUTH_IPS_24H=3
 # ALERT_DEFERRED=200
 # ALERT_REPEAT_SECONDS=3600
+# Pengirim yang boleh kirim banyak (broadcast): tidak dapat alert volume, alert login tetap jalan.
+# ALERT_SENDER_EXCLUDE=""
