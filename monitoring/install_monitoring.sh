@@ -9,7 +9,7 @@ set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "ERROR: jalankan sebagai root." >&2; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
-for f in postfix_relay.mtail rspamd_relay.mtail relay-metrics.sh relay-alert.sh relay-alert.conf.example grafana-relay-dashboard.json; do
+for f in postfix_relay.mtail rspamd_relay.mtail relay-metrics.sh relay-alert.sh relay-deadlist.sh relay-alert.conf.example grafana-relay-dashboard.json; do
   [ -f "$HERE/$f" ] || { echo "ERROR: $HERE/$f tidak ada." >&2; exit 1; }
 done
 
@@ -100,6 +100,14 @@ install -m 755 "$HERE/relay-alert.sh" /usr/local/bin/relay-alert.sh
 [ -f /etc/relay-alert.conf ] || install -m 600 "$HERE/relay-alert.conf.example" /etc/relay-alert.conf
 echo "*/5 * * * * root /usr/local/bin/relay-alert.sh >/dev/null 2>&1" > /etc/cron.d/relay-alert
 chmod 644 /etc/cron.d/relay-alert
+
+# ---------- Daftar alamat penerima mati (harian 05:30) -> /root/deadlist/ ----------
+install -m 755 "$HERE/relay-deadlist.sh" /usr/local/bin/relay-deadlist.sh
+cat > /etc/cron.d/relay-deadlist <<'EOF'
+# Perbarui daftar alamat penerima mati tiap hari (output: /root/deadlist/)
+30 5 * * * root /usr/local/bin/relay-deadlist.sh >/dev/null 2>&1
+EOF
+chmod 644 /etc/cron.d/relay-deadlist
 
 # ---------- mtail (127.0.0.1:3903) ----------
 install -d -m 755 /etc/mtail

@@ -113,6 +113,21 @@ melihat IP upstream. Pertahanannya:
   Map ini dicek sebelum `permit_mynetworks`. Email tertahan: `postqueue -p | grep '!'`;
   lepas `postsuper -H <id>`, hapus `postsuper -d <id>`. Ganti password di upstream lebih dulu.
 
+## Antrean 1 hari & daftar alamat mati
+
+- Email yang tidak terkirim dalam 1 hari dibuang dari antrean
+  (`maximal_queue_lifetime = 1d`, `bounce_queue_lifetime = 1d`); pengirim menerima notifikasi gagal.
+- `monitoring/relay-deadlist.sh` (cron harian 05:30, dipasang `install_monitoring.sh`) membaca
+  semua `mail.log*` dan menulis daftar penerima mati per pengirim ke `/root/deadlist/`:
+  - `deadlist-all.csv`: `sender,recipient,last_date,kategori,dsn,reason`
+  - `deadlist-<pengirim>.txt`: alamat saja, satu per baris, untuk dibuang dari list broadcast
+- Kategori: `alamat_atau_domain_tidak_ada` (5.1.x, domain tanpa DNS), `mailbox_penuh`,
+  `expired_tidak_bisa_dihubungi` (masih gagal setelah 1 hari).
+- Tidak dimasukkan: bounce akibat relay sendiri (5.7.25 PTR, 5.7.1 blok IP, SPF/DKIM/DMARC)
+  dan penolakan spam/policy, karena alamatnya masih hidup. Alamat yang belakangan berhasil
+  terkirim otomatis keluar dari daftar.
+- Jalankan manual: `/usr/local/bin/relay-deadlist.sh` (sekitar 1-2 menit).
+
 ## Monitoring (Grafana)
 
 ```bash

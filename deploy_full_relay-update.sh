@@ -190,6 +190,11 @@ postconf -e "smtp_destination_concurrency_limit = 30"
 postconf -e "smtp_extra_recipient_limit = 100"
 postconf -e "max_use = 200"
 
+# Email yang tidak terkirim dalam 1 hari dibuang dari antrean (pengirim dapat notifikasi gagal).
+# Alamat penerimanya tercatat di daftar alamat mati (monitoring/relay-deadlist.sh).
+postconf -e "maximal_queue_lifetime = 1d"
+postconf -e "bounce_queue_lifetime = 1d"
+
 # ---------- DKIM (opsional, diisi manual) ----------
 DKIM_TXT=""
 if [ -n "$DKIM_SELECTOR" ]; then
