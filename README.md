@@ -14,6 +14,8 @@ mailbox server (mynetworks) --SMTP 25/587--> relay Postfix --out1..outN (bind IP
 - `/usr/local/bin/rotate_postfix_transport.sh` dijalankan cron tiap menit dan memutar
   `transport_maps` (`* outN:`) secara round-robin ke IP berikutnya.
 - RBL di `smtpd_recipient_restrictions`, blokir pengirim via `sender_access` dan `header_checks`.
+- Blokir domain tujuan mati/bot via `recipient_blocklist` (dicek paling depan di port 25 dan 587;
+  email ditolak `554 5.1.2` tanpa masuk antrian). Tambah domain lalu `postmap /etc/postfix/recipient_blocklist`.
 - fail2ban jail `postfix` dan `sshd` dengan aksi `route`.
 - DKIM opsional: default ditandatangani di mailbox server upstream; bila selector dan key
   diisi saat deploy, relay ikut menandatangani via OpenDKIM.
@@ -49,7 +51,7 @@ Bila DKIM diisi, relay menandatangani lewat OpenDKIM (`inet:127.0.0.1:8891`) dan
 script mencetak record TXT yang harus ada di DNS.
 
 Script idempotent: `main.cf` dan `master.cf` di-backup (`*.bak-<timestamp>`), blok `outN`
-dibuat ulang, sedangkan `sender_access`/`header_checks` yang sudah ada tidak ditimpa.
+dibuat ulang, sedangkan `sender_access`/`header_checks`/`sender_hold`/`recipient_blocklist` yang sudah ada tidak ditimpa.
 
 ## Filter spam keluar (Rspamd)
 
@@ -72,7 +74,8 @@ lalu deploy ulang dengan `RSPAMD_MODE=enforce`.
 - Web UI: `ssh -L 11334:127.0.0.1:11334 root@<relay>` lalu buka `http://127.0.0.1:11334`.
   Password ada di `/root/.rspamd_ui_password` (dibuat acak, hanya root) dan **selalu wajib**,
   juga dari localhost (`secure_ip = []` di `override.d`).
-- Rspamd 2.7 (paket Ubuntu) dipakai karena rspamd 3.x butuh CPU dengan SSE4.2/SSSE3.
+- Rspamd dipasang dari repo resmi `rspamd.com/apt-stable` (produksi: 4.3.1) bila CPU punya SSSE3;
+  tanpa SSSE3 jatuh ke paket Ubuntu 2.7. Semua worker `allow_file_and_shm_inputs = false`.
 - String uji GTUBE selalu memaksa reject, juga pada mode `observe`.
 - Ratelimit tidak menghitung pemindaian manual via `rspamc`; uji lewat HTTP
   `curl -H "From: a@b" -H "IP: x" --data-binary @mail.eml http://127.0.0.1:11333/checkv2`.

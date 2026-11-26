@@ -16,7 +16,7 @@
 # DKIM opsional: kosongkan DKIM_SELECTOR untuk melewati (DKIM ditandatangani upstream).
 #
 # Script ini idempotent: aman dijalankan ulang. Blok transport outN di master.cf
-# dibuat ulang dari awal, file map (sender_access, header_checks) tidak ditimpa bila sudah ada.
+# dibuat ulang dari awal, file map (sender_access, header_checks, sender_hold, recipient_blocklist) tidak ditimpa bila sudah ada.
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -178,7 +178,8 @@ postconf -e 'smtp_tls_session_cache_database = btree:${data_directory}/smtp_scac
 postconf -e "smtpd_helo_required = yes"
 postconf -e "smtpd_delay_reject = yes"
 postconf -e "disable_vrfy_command = yes"
-postconf -e "smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
+# recipient_blocklist dicek PALING DEPAN: domain tujuan mati/bot (mis. signup palsu) ditolak tanpa antre/bounce.
+postconf -e "smtpd_relay_restrictions = check_recipient_access hash:/etc/postfix/recipient_blocklist, permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
 postconf -e "smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination, reject_rbl_client zen.spamhaus.org, reject_rbl_client bl.spamcop.net, reject_rbl_client b.barracudacentral.org"
 # sender_hold dicek PALING DEPAN (sebelum permit_mynetworks) agar akun upstream yang dibobol bisa ditahan.
 postconf -e "smtpd_sender_restrictions = check_sender_access hash:/etc/postfix/sender_hold, permit_mynetworks, permit_sasl_authenticated, check_sender_access hash:/etc/postfix/sender_access, reject_unknown_sender_domain, reject_non_fqdn_sender"
@@ -242,7 +243,18 @@ fi
 # RL_EXEMPT   : pengirim yang dilewati ratelimit sama sekali (settings rspamd), mis. akun broadcast
 if [ "$RSPAMD_MODE" != "off" ]; then
   echo ">> Konfigurasi rspamd (mode: $RSPAMD_MODE)..."
-  apt-get install -y rspamd redis-server unbound
+  # Rspamd dari repo resmi rspamd.com (versi terbaru) bila CPU punya SSSE3 (wajib untuk hyperscan);
+  # selain itu pakai paket Ubuntu (2.7). Konfigurasi local.d di bawah kompatibel dengan keduanya.
+  if grep -qw ssse3 /proc/cpuinfo; then
+    . /etc/os-release
+    install -d /etc/apt/keyrings
+    curl -fsSL https://rspamd.com/apt-stable/gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/rspamd.gpg
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rspamd.gpg] https://rspamd.com/apt-stable/ $VERSION_CODENAME main" > /etc/apt/sources.list.d/rspamd.list
+    apt-get update -q
+  else
+    rm -f /etc/apt/sources.list.d/rspamd.list
+  fi
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::=--force-confnew rspamd redis-server unbound
   # Resolver rekursif lokal: rspamd butuh DNS yang tidak diblokir Spamhaus/SURBL
   # (resolver publik 1.1.1.1/8.8.8.8 ditolak). DNS sistem tidak diubah.
   cat > /etc/unbound/unbound.conf.d/relay-local.conf <<'EOF'
@@ -281,6 +293,7 @@ EOF
 bind_socket = "127.0.0.1:11334";
 password = "$RSPAMD_VIEW_HASH";
 enable_password = "$RSPAMD_ADMIN_HASH";
+allow_file_and_shm_inputs = false;
 EOF
   chmod 640 $RD/worker-controller.inc; chown root:_rspamd $RD/worker-controller.inc
   # Bawaan rspamd: 127.0.0.1 boleh masuk UI tanpa password (secure_ip). Akses lewat SSH tunnel
@@ -289,9 +302,12 @@ EOF
   cat > /etc/rspamd/override.d/worker-controller.inc <<'EOF'
 secure_ip = [];
 EOF
-  echo 'bind_socket = "127.0.0.1:11333";' > $RD/worker-normal.inc
+  # allow_file_and_shm_inputs = false: klien TCP tidak bisa menyuruh rspamd membaca file lokal
+  # (peringatan SECURITY rspamd 4.x; akan jadi bawaan di rilis mayor berikutnya).
+  printf 'bind_socket = "127.0.0.1:11333";\nallow_file_and_shm_inputs = false;\n' > $RD/worker-normal.inc
   cat > $RD/worker-proxy.inc <<'EOF'
 bind_socket = "127.0.0.1:11332";
+allow_file_and_shm_inputs = false;
 milter = yes;
 timeout = 120s;
 upstream "local" {
@@ -332,7 +348,7 @@ greylist = null;
 EOF
   fi
 
-  # Rate limit per pengirim envelope. rspamd 2.7: 'symbol' hanya bisa di tingkat modul.
+  # Rate limit per pengirim envelope. 'symbol' di tingkat modul (kompatibel rspamd 2.7 s.d. 4.x).
   # RL_MODE terpisah dari RSPAMD_MODE: batas kirim bisa enforce walau skor spam masih observasi.
   if [ "$RL_MODE" = "enforce" ]; then RL_SYMBOL_LINE=""; else RL_SYMBOL_LINE='symbol = "RATELIMITED";'; fi
   OVR_ADDRS=""; OVR_RATES=""
@@ -429,8 +445,15 @@ fi
 grep -q 'auth-origin' /etc/postfix/header_checks || cat >> /etc/postfix/header_checks <<'EOF'
 /^Received: from .*\[([0-9a-fA-F.:]+)\]\)?[[:space:]]+by [^[:space:]]+ \(Postfix\) with ESMTPSA/ WARN auth-origin $1
 EOF
+if [ ! -f /etc/postfix/recipient_blocklist ]; then
+  cat > /etc/postfix/recipient_blocklist <<'EOF'
+# Domain tujuan mati/bot: ditolak di relay (port 25 dan 587) tanpa masuk antrian.
+# domain.tld    REJECT 5.1.2 Recipient domain blocked (dead/bot domain)
+EOF
+fi
 postmap hash:/etc/postfix/sender_access
 postmap hash:/etc/postfix/sender_hold
+postmap hash:/etc/postfix/recipient_blocklist
 
 # ---------- master.cf ----------
 echo ">> Konfigurasi master.cf (submission + transport out1..out$N)..."
@@ -456,7 +479,7 @@ postconf -P "submission/inet/syslog_name=postfix/submission"
 postconf -P "submission/inet/smtpd_tls_security_level=encrypt"
 postconf -P "submission/inet/smtpd_sasl_auth_enable=yes"
 postconf -P "submission/inet/smtpd_recipient_restrictions=permit_mynetworks,permit_sasl_authenticated,reject_unauth_destination"
-postconf -P "submission/inet/smtpd_relay_restrictions=permit_mynetworks,reject_unauth_destination"
+postconf -P "submission/inet/smtpd_relay_restrictions=check_recipient_access,hash:/etc/postfix/recipient_blocklist,permit_mynetworks,reject_unauth_destination"
 postconf -P "submission/inet/smtpd_client_restrictions="
 
 {
